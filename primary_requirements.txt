@@ -1,0 +1,7 @@
+numpy
+scipy
+scikit-learn>=1.8.0
+matplotlib
+pyaml
+joblib
+wheel==0.42.0
