@@ -11,7 +11,7 @@ import json
 import subprocess
 from google.api_core.exceptions import ResourceExhausted
 from pypi_simple import PyPISimple
-from packaging.version import parse as parse_version
+from packaging.version import parse as parse_version, InvalidVersion
 from tenacity import retry, stop_after_attempt, wait_exponential
 from agent_utils import start_group, end_group, run_command, validate_changes
 from expert_agent import ExpertAgent
@@ -321,31 +321,43 @@ class DependencyAgent:
         wait=wait_exponential(multiplier=1, min=2, max=10),
         reraise=False
     )
+    
     def get_latest_version(self, package_name):
-        """
-        Fetches the latest stable version from PyPI with a retry strategy 
-        to handle API rate limits and network flakiness.
-        """
         try:
             package_info = self.pypi.get_project_page(package_name)
             if not (package_info and package_info.packages): 
                 return None
             
-            # Filter for stable releases only (exclude alpha, beta, rc)
-            stable_versions = [
-                p.version for p in package_info.packages 
-                if p.version and not parse_version(p.version).is_prerelease
-            ]
+            stable_versions = []
+            for p in package_info.packages:
+                if not p.version:
+                    continue
+                try:
+                    # If this fails, it's a non-PEP 440 compliant version (like 0.3.2d.dev)
+                    parsed_v = parse_version(p.version)
+                    
+                    # Only include stable, non-prerelease versions
+                    if not parsed_v.is_prerelease:
+                        stable_versions.append(p.version)
+                except InvalidVersion:
+                    # Skip the "fossils" and keep moving
+                    continue
             
             if stable_versions:
+                # Return the highest compliant stable version
                 return max(stable_versions, key=parse_version)
             
-            # Fallback to absolute max if no 'stable' tag exists
-            return max([p.version for p in package_info.packages if p.version], key=parse_version)
+            # Fallback: if NO stable versions exist, just get the max compliant version
+            all_valid = []
+            for p in package_info.packages:
+                try:
+                    all_valid.append(p.version)
+                except InvalidVersion:
+                    continue
+            return max(all_valid, key=parse_version) if all_valid else None
             
         except Exception as e:
-            # We log the error but the @retry decorator handles the actual repetition
-            print(f"  [!] PyPI Lookup Attempt failed for {package_name}: {e}")
+            print(f"  [!] PyPI Lookup Error for {package_name}: {e}")
             return None
 
     def _run_bootstrap_and_validate(self, venv_dir, requirements_source):
